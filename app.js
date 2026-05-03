@@ -45,7 +45,7 @@ const User = mongoose.model("User", userSchema);
 const toBold = (text) => {
     if (!text) return "";
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    const boldChars = ["𝗔","𝗕","𝗖","𝗗","𝗘","𝗙","𝗚","𝗛","𝗜","𝗝","𝗞","𝗟","𝗠","𝗡","𝗢","𝗣","𝗤","𝗥","𝗦","𝗧","𝗨","𝗩","𝗪","𝗫","𝗬","𝗭","𝗮","𝗯","𝗰","𝗱","𝗲","𝗳","𝗴","𝗵","𝗶","𝗷","𝗸","𝗹","𝗺","𝗻","𝗼","𝗽","𝗾","𝗿","𝘀","𝘁","𝘂","𝘃","𝘄","𝗅","𝘆","𝘇","𝟬","𝟭","𝟮","𝟯","𝟰","𝟱","𝟲","𝟳","𝟴","𝟵"];
+    const boldChars = ["𝗔","𝗕","𝗖","𝗗","𝗘","𝗙","𝗚","𝗛","𝗜","𝗝","𝗞","𝗟","𝗠","𝗡","𝗢","𝗣","𝗤","𝗥","𝗦","𝗧","𝗨","𝗩","𝗪","𝗫","𝗬","𝗭","𝗮","𝗯","𝗰","𝗱","𝗲","𝗳","𝗴","𝗵","𝗶","𝗷","𝗸","𝗹","𝗺","𝗻","𝗼","𝗽","𝗾","𝗿","𝘀","𝘁","𝘂","𝘃","𝘄","𝘅","𝘆","𝘇","𝟬","𝟭","𝟮","𝟯","𝟰","𝟱","𝟲","𝟳","𝟴","𝟵"];
     return text.split('').map(c => {
         const i = chars.indexOf(c);
         return i > -1 ? boldChars[i] : c;
@@ -88,16 +88,18 @@ app.post('/webhook', async (req, res) => {
                     continue;
                 }
 
-                // 🎭 REACTIONS
+                // 🎭 REACTIONS FIXED
                 if (event.reaction && activeChats[senderId]) {
-                    const reactionType = event.reaction.reaction;
-                    const emojiMap = { 'love': '❤️', 'smile': '😄', 'wow': '😮', 'sad': '😢', 'angry': '😠', 'like': '👍', 'dislike': '👎' };
+                    const reactionType = event.reaction.reaction; // 'love', 'smile', etc.
+                    const emojiMap = { 'love': '❤️', 'smile': '😄', 'wow': '😮', 'sad': '😢', 'angry': '😠', 'like': '👍', 'dislike': '👎', 'heart': '❤️', 'other': '✨' };
                     const displayEmoji = emojiMap[reactionType] || "✨";
+                    
+                    // Correctly pull the text of the message being reacted to
                     let targetText = event.reaction.text || "";
 
                     if (isSystemTag(targetText)) continue; 
 
-                    const ownerLabel = event.reaction.mid ? "your" : "their";
+                    const ownerLabel = (event.reaction.action === 'react') ? "your" : "their";
                     const reactionMsg = `${toBold(`reacted ${displayEmoji} to ${ownerLabel} message`)} "${targetText}"`;
                     await sendMessage(activeChats[senderId], reactionMsg);
                     continue;
@@ -124,18 +126,19 @@ app.post('/webhook', async (req, res) => {
                     }
                     if (commandHandled) continue;
 
-                    // RELAY
+                    // RELAY FIXED
                     if (activeChats[senderId]) {
                         userMessageCount[senderId] = (userMessageCount[senderId] || 0) + 1;
                         
+                        // Check for reply_to metadata properly
                         if (event.message.reply_to) {
                             const originalText = event.message.reply_to.text;
                             
-                            // IF REPLY TO SYSTEM OR MEDIA: GHOST THE TAG
-                            if (isSystemTag(originalText) || !originalText) {
+                            // If reply to SYSTEM text or if original was MEDIA (no text)
+                            if (!originalText || isSystemTag(originalText)) {
                                 if (text) await sendMessage(activeChats[senderId], text);
                             } 
-                            // IF REPLY TO TEXT: SEND FORMATTED TAG
+                            // If reply to normal USER text
                             else {
                                 const formattedReply = `${toBold("replied to")} "${originalText}"\n\n${text || ""}`;
                                 await sendMessage(activeChats[senderId], formattedReply);
