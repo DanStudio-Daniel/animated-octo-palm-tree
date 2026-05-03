@@ -14,7 +14,6 @@ app.get('/', (req, res) => {
 // ⚙️ CONFIGURATION
 const PAGE_ACCESS_TOKEN = "EAAcLptP3AhgBRbxtMkjyqblLYuUryqvrNKX7bpydhj2hHG6IUTUg4o3TNye8O4O49F0ZAxkUl6DNtxhY3ZCv8pBQy8lmCL53TccXSQZC8lmqgpfFZARYDkcO4otxmz3Kp9LlKlG75i1JZAkry2vhGYYzX5OrEcq94LXdc0JKrV72KzFSZCuMD6wirwOnMFfGfVs6tr7QZDZD";
 const VERIFY_TOKEN = "key";
-const OWNER_PASSWORD = "dan122012";
 const PORT = process.env.PORT || 10000;
 
 // 📦 MEMORY STORAGE
@@ -32,25 +31,31 @@ mongoose.connect(mongoURI)
 .then(() => console.log("✅ MongoDB Connected Successfully"))
 .catch(err => console.log("❌ MongoDB Connection Error:", err));
 
-// 📋 SCHEMA & MODEL
+// 📋 SCHEMA
 const userSchema = new mongoose.Schema({
     psid: { type: String, required: true, unique: true },
     name: { type: String, required: true },
-    age: { type: Number, required: true },
     role: { type: String, default: "member" },
     isBanned: { type: Boolean, default: false }
 });
 
 const User = mongoose.model("User", userSchema);
 
-// Helper for Unicode Bold (Reliable character mapping)
+// Helper for Unicode Bold
 const toBold = (text) => {
+    if (!text) return "";
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     const boldChars = ["𝗔","𝗕","𝗖","𝗗","𝗘","𝗙","𝗚","𝗛","𝗜","𝗝","𝗞","𝗟","𝗠","𝗡","𝗢","𝗣","𝗤","𝗥","𝗦","𝗧","𝗨","𝗩","𝗪","𝗫","𝗬","𝗭","𝗮","𝗯","𝗰","𝗱","𝗲","𝗳","𝗴","𝗵","𝗶","𝗷","𝗸","𝗹","𝗺","𝗻","𝗼","𝗽","𝗾","𝗿","𝘀","𝘁","𝘂","𝘃","𝘄","𝘅","𝘆","𝘇","𝟬","𝟭","𝟮","𝟯","𝟰","𝟱","𝟲","𝟳","𝟴","𝟵"];
     return text.split('').map(c => {
         const i = chars.indexOf(c);
         return i > -1 ? boldChars[i] : c;
     }).join('');
+};
+
+// Ghost Handler Check
+const isSystemTag = (text) => {
+    if (!text) return false;
+    return text.startsWith("𝗿"); 
 };
 
 // ==========================
@@ -65,41 +70,42 @@ app.get('/webhook', (req, res) => {
 });
 
 // ==========================
-// HANDLE INCOMING MESSAGES
+// HANDLE INCOMING
 // ==========================
 app.post('/webhook', async (req, res) => {
     const body = req.body;
 
     if (body.object === 'page') {
-        body.entry.forEach(entry => {
-            entry.messaging.forEach(async event => {
+        for (const entry of body.entry) {
+            for (const event of entry.messaging) {
                 const senderId = event.sender.id;
                 const userData = await User.findOne({ psid: senderId });
 
-                // 🚫 BANNED CHECK
                 if (userData && userData.isBanned) {
-                    if (event.message && event.message.text) {
-                        await sendMessage(senderId, "🚫 ACCESS DENIED\n────────────────────\nYou are banned from using the bot for violating our community guidelines. If you think this is a mistake or wish to appeal your restriction, please contact Azuki Dan for further assistance.");
+                    if (event.message?.text) {
+                        await sendMessage(senderId, "🚫 ACCESS DENIED\n────────────────────\nYou are banned from using the bot. If you think this is a mistake, contact Azuki Dan.");
                     }
-                    return;
+                    continue;
                 }
 
-                // HANDLE REACTIONS
+                // 🎭 REACTIONS
                 if (event.reaction && activeChats[senderId]) {
-                    const reaction = event.reaction.reaction;
+                    const reactionType = event.reaction.reaction;
                     const emojiMap = { 'love': '❤️', 'smile': '😄', 'wow': '😮', 'sad': '😢', 'angry': '😠', 'like': '👍', 'dislike': '👎' };
-                    const displayEmoji = emojiMap[reaction] || reaction;
-                    const targetText = event.reaction.text || "a message";
+                    const displayEmoji = emojiMap[reactionType] || "✨";
+                    let targetText = event.reaction.text || "a message";
+
+                    if (isSystemTag(targetText)) continue; 
+
                     const ownerLabel = event.reaction.mid ? "your" : "their";
-                    
                     const reactionMsg = toBold(`reacted ${displayEmoji} to ${ownerLabel} message "${targetText}"`);
                     await sendMessage(activeChats[senderId], reactionMsg);
-                    return;
+                    continue;
                 }
 
                 if (event.read && activeChats[senderId]) {
                     await markSeen(activeChats[senderId]);
-                    return;
+                    continue;
                 }
 
                 await markSeen(senderId);
@@ -108,35 +114,36 @@ app.post('/webhook', async (req, res) => {
                     const text = event.message.text;
                     const lowerText = text ? text.toLowerCase() : "";
 
-                    // COMMANDS
                     let commandHandled = false;
                     if (lowerText === "quit") {
                         await handleQuit(senderId);
                         commandHandled = true;
-                    }
-                    else if (lowerText.startsWith("/admin ") || lowerText.startsWith("/ban ") || lowerText.startsWith("/unban ") || lowerText.startsWith("/loginowner ") || lowerText === "/setinfo" || tempState[senderId]) {
+                    } else if (lowerText.startsWith("/admin ") || lowerText.startsWith("/ban ") || lowerText.startsWith("/unban ") || lowerText.startsWith("/loginowner ") || lowerText === "/setinfo" || tempState[senderId]) {
                         await handleMessage(senderId, text, lowerText);
                         commandHandled = true;
                     }
-                    if (commandHandled) return;
+                    if (commandHandled) continue;
 
-                    // CHAT RELAY
+                    // RELAY
                     if (activeChats[senderId]) {
                         userMessageCount[senderId] = (userMessageCount[senderId] || 0) + 1;
                         
-                        // Handle Replies (Formatted with Bold)
                         if (event.message.reply_to) {
-                            const repliedText = event.message.reply_to.text || "Attachment";
-                            const formattedReply = `${toBold(`replied to "${repliedText}"`)}\n\n${text}`;
-                            await sendMessage(activeChats[senderId], formattedReply);
+                            const originalText = event.message.reply_to.text || "";
+                            
+                            if (isSystemTag(originalText)) {
+                                if (text) await sendMessage(activeChats[senderId], text);
+                            } else {
+                                const repliedText = originalText || "an attachment";
+                                const formattedReply = `${toBold(`replied to "${repliedText}"`)}\n\n${text || ""}`;
+                                await sendMessage(activeChats[senderId], formattedReply);
+                            }
                         } 
-                        // Handle Media (VM, Video, Image) - NO AUTO FONT
                         else if (event.message.attachments) {
                             for (let att of event.message.attachments) {
                                 await sendMedia(activeChats[senderId], att.type, att.payload.url);
                             }
                         } 
-                        // Handle Regular Forwarded Text - NO AUTO FONT
                         else if (text) {
                             await sendMessage(activeChats[senderId], text);
                         }
@@ -144,12 +151,12 @@ app.post('/webhook', async (req, res) => {
                         if (lowerText === "chat" || lowerText === "/profile") {
                             await handleMessage(senderId, text, lowerText);
                         } else if (!userData) {
-                            await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View your profile\nchat - Find someone\nquit - End conversation`);
+                            await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`);
                         }
                     }
                 }
-            });
-        });
+            }
+        }
         res.status(200).send('EVENT_RECEIVED');
     } else {
         res.sendStatus(404);
@@ -157,13 +164,13 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ==========================
-// MAIN LOGIC
+// LOGIC HANDLERS
 // ==========================
 async function handleMessage(senderId, text, lowerText) {
     let userData = await User.findOne({ psid: senderId });
 
     if (lowerText === "/loginowner dan122012") {
-        if (!userData) userData = new User({ psid: senderId, name: "Owner", age: 1 });
+        if (!userData) userData = new User({ psid: senderId, name: "Owner" });
         userData.role = "owner";
         await userData.save();
         return sendMessage(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.");
@@ -171,31 +178,19 @@ async function handleMessage(senderId, text, lowerText) {
 
     if (lowerText === "/setinfo" || tempState[senderId]) {
         if (lowerText === "/setinfo") {
-            const mode = userData ? "UPDATING PROFILE" : "REGISTRATION";
             tempState[senderId] = { step: 1, data: { role: userData ? userData.role : "member" } };
-            return sendMessage(senderId, `📝 ${mode}: STEP 1/2\n────────────────────\nPlease enter your username (2-20 characters):`);
+            return sendMessage(senderId, `📝 REGISTRATION\n────────────────────\nPlease enter your username (2-20 characters):`);
         }
-
         const state = tempState[senderId];
         if (state.step === 1) {
             if (!text || text.length < 2 || text.length > 20) {
-                return sendMessage(senderId, "⚠️ INVALID USERNAME\n────────────────────\nName must be 2-20 characters. Try again:");
+                return sendMessage(senderId, "⚠️ INVALID USERNAME\nName must be 2-20 characters. Try again:");
             }
             const existing = await User.findOne({ name: text });
             if (existing && existing.psid !== senderId) {
-                return sendMessage(senderId, "❌ NAME TAKEN\n────────────────────\nThis username is already in use. Please choose another one:");
+                return sendMessage(senderId, "❌ NAME TAKEN\nPlease choose another one:");
             }
             state.data.name = text;
-            state.step = 2;
-            return sendMessage(senderId, `📝 STEP 2/2\n────────────────────\nPlease enter your age (15-100):`);
-        }
-        
-        if (state.step === 2) {
-            const ageNum = parseInt(text);
-            if (isNaN(ageNum)) return sendMessage(senderId, "❌ TYPE ERROR\n────────────────────\nThat's not a number! Enter age using digits:");
-            if (ageNum < 15 || ageNum > 100) return sendMessage(senderId, "⚠️ OUT OF RANGE\n────────────────────\nAge must be between 15-100. Try again:");
-            
-            state.data.age = ageNum;
             await User.findOneAndUpdate({ psid: senderId }, state.data, { upsert: true });
             delete tempState[senderId];
             return sendMessage(senderId, `✅ PROFILE SAVED\n────────────────────\nWelcome ${state.data.name}!\n\nType 'chat' to start.`);
@@ -206,25 +201,18 @@ async function handleMessage(senderId, text, lowerText) {
     if (!userData) return;
 
     if (lowerText === "/profile") {
-        return sendMessage(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${userData.name}\nAge: ${userData.age}\nRole: ${userData.role.toUpperCase()}`);
+        return sendMessage(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${userData.name}\nRole: ${userData.role.toUpperCase()}`);
     }
 
     if (lowerText.startsWith("/admin ")) {
         if (userData.role !== "owner") return sendMessage(senderId, "❌ PERMISSION DENIED");
         const parts = text.split(" ");
-        const action = parts[1];
         const targetName = parts.slice(2).join(" ");
         const targetUser = await User.findOne({ name: targetName });
         if (!targetUser) return sendMessage(senderId, "❌ USER NOT FOUND");
-        if (action === "add") {
-            targetUser.role = "admin";
-            await targetUser.save();
-            return sendMessage(senderId, `✅ SUCCESS\n${targetName} is now admin.`);
-        } else if (action === "remove") {
-            targetUser.role = "member";
-            await targetUser.save();
-            return sendMessage(senderId, `✅ SUCCESS\n${targetName} demoted to member.`);
-        }
+        targetUser.role = (parts[1] === "add") ? "admin" : "member";
+        await targetUser.save();
+        return sendMessage(senderId, `✅ SUCCESS\n${targetName} is now ${targetUser.role.toUpperCase()}.`);
     }
 
     if (lowerText.startsWith("/ban ")) {
@@ -251,12 +239,12 @@ async function handleMessage(senderId, text, lowerText) {
             userMessageCount[senderId] = 0; userMessageCount[partner] = 0;
             const pData = await User.findOne({ psid: partner });
             const myData = await User.findOne({ psid: senderId });
-            const guide = `\n────────────────────\n💬 GUIDE:\n- Send messages, images, videos, or VM\n- Type 'quit' to end chat`;
-            await sendMessage(senderId, `🎉 CONNECTED!\n────────────────────\nPartner: ${pData.name}${guide}`);
-            await sendMessage(partner, `🎉 CONNECTED!\n────────────────────\nPartner: ${myData.name}${guide}`);
+            const guide = `\n────────────────────\n💬 GUIDE:\n- Send messages, media, or VM\n- Type 'quit' to end`;
+            await sendMessage(senderId, `🎉 CONNECTED!\n────────────────────\nPartner: ${pData.name}\nRole: ${pData.role.toUpperCase()}${guide}`);
+            await sendMessage(partner, `🎉 CONNECTED!\n────────────────────\nPartner: ${myData.name}\nRole: ${myData.role.toUpperCase()}${guide}`);
         } else {
             waitingQueue.push(senderId);
-            await sendMessage(senderId, "🔍 SEARCHING...\n────────────────────\nLooking for a partner...");
+            await sendMessage(senderId, "🔍 SEARCHING...\n────────────────────\nWaiting for a partner...");
         }
     }
 }
@@ -275,7 +263,7 @@ async function sendMessage(id, text) {
 }
 
 async function sendMedia(id, type, url) {
-    try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { attachment: { type: type, payload: { url } } } }); } catch (e) {}
+    try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { attachment: { type, payload: { url } } } }); } catch (e) {}
 }
 
 async function markSeen(id) {
