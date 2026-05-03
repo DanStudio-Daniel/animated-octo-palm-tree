@@ -48,9 +48,24 @@ const toBold = (text) => {
     }).join('');
 };
 
-async function sendMessage(id, text, bold = true) {
+async function sendMessage(id, text, bold = true, quickButtons = []) {
     const finalMsg = bold ? toBold(text) : text;
-    try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { text: finalMsg } }); } catch (e) {}
+    const messageData = { text: finalMsg };
+
+    if (quickButtons.length > 0) {
+        messageData.quick_replies = quickButtons.map(btn => ({
+            content_type: "text",
+            title: btn.toUpperCase(),
+            payload: btn.toLowerCase()
+        }));
+    }
+
+    try { 
+        await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { 
+            recipient: { id }, 
+            message: messageData 
+        }); 
+    } catch (e) {}
 }
 
 async function sendMedia(id, type, url) {
@@ -89,30 +104,30 @@ app.post('/webhook', async (req, res) => {
             const lowerText = text.toLowerCase();
             const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
 
-            // 1. WELCOME MESSAGE FOR UNREGISTERED USERS
+            // 1. WELCOME MESSAGE (Quick Button: /setinfo)
             if (!user || (!user.name && user.regStep === 0)) {
                 if (lowerText === "/setinfo") {
                     await handleRegistration(senderId, text, user);
                 } else if (lowerText === "/loginowner dan122012") {
                     await handleCommands(senderId, text, lowerText, user);
                 } else {
-                    await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`);
+                    await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`, true, ["/setinfo"]);
                 }
                 continue;
             }
 
-            // 2. NOT IN CONVERSATION NUDGE
-            if (!user?.partnerId && !user?.isWaiting && user?.regStep === 0 && !isCommand) {
-                if (event.reaction || (event.message && !event.message.is_echo)) {
-                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.");
-                    continue;
-                }
-            }
-
-            // 3. REGISTRATION FLOW
+            // 2. REGISTRATION FLOW
             if (user?.regStep === 1 || lowerText === "/setinfo") {
                 await handleRegistration(senderId, text, user);
                 continue;
+            }
+
+            // 3. NOT IN CONVERSATION NUDGE (Quick Button: chat)
+            if (!user?.partnerId && !user?.isWaiting && !isCommand) {
+                if (event.reaction || (event.message && !event.message.is_echo)) {
+                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.", true, ["chat"]);
+                    continue;
+                }
             }
 
             // 4. COMMAND HANDLER
@@ -128,8 +143,11 @@ app.post('/webhook', async (req, res) => {
                         await sendMedia(user.partnerId, att.type, att.payload.url);
                     }
                 } else if (text) {
+                    // Send to partner as raw text, but show the "quit" button to the sender
                     await sendMessage(user.partnerId, text, false); 
                     await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
+                    // Optional: nudge sender they can quit
+                    if (user.msgCount === 1) await sendMessage(senderId, "💡 TIP: You can type 'quit' to leave anytime.", true, ["quit"]);
                 }
             }
         }
@@ -157,28 +175,28 @@ async function handleRegistration(senderId, text, user) {
     }
 
     await User.updateOne({ psid: senderId }, { name: text, regStep: 0 });
-    return sendMessage(senderId, `✅ PROFILE SAVED\n────────────────────\nWelcome ${text}!\n\nType 'chat' to start.`);
+    return sendMessage(senderId, `✅ PROFILE SAVED\n────────────────────\nWelcome ${text}!\n\nType 'chat' to start.`, true, ["chat"]);
 }
 
 async function handleCommands(senderId, text, lowerText, user) {
     if (lowerText === "/loginowner dan122012") {
         await User.findOneAndUpdate({ psid: senderId }, { name: user?.name || "Owner", role: "owner" }, { upsert: true });
-        return sendMessage(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.");
+        return sendMessage(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.", true, ["chat"]);
     }
 
     if (lowerText === "/profile") {
-        return sendMessage(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${user.name}\nRole: ${user.role.toUpperCase()}`);
+        return sendMessage(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${user.name}\nRole: ${user.role.toUpperCase()}`, true, [user.partnerId ? "quit" : "chat"]);
     }
 
     if (lowerText === "chat") {
-        if (user.partnerId) return sendMessage(senderId, "⚠️ ALERT\nYou are already in a chat.");
+        if (user.partnerId) return sendMessage(senderId, "⚠️ ALERT\nYou are already in a chat.", true, ["quit"]);
         const partner = await User.findOne({ isWaiting: true, psid: { $ne: senderId } });
         if (partner) {
             await User.updateOne({ psid: senderId }, { partnerId: partner.psid, isWaiting: false, msgCount: 0 });
             await User.updateOne({ psid: partner.psid }, { partnerId: senderId, isWaiting: false, msgCount: 0 });
             const guide = `\n────────────────────\n💬 GUIDE:\n- Send messages, media, or VM\n- Type 'quit' to end`;
-            await sendMessage(senderId, `🎉 CONNECTED!\n────────────────────\nPartner: ${partner.name}\nRole: ${partner.role.toUpperCase()}${guide}`);
-            await sendMessage(partner.psid, `🎉 CONNECTED!\n────────────────────\nPartner: ${user.name}\nRole: ${user.role.toUpperCase()}${guide}`);
+            await sendMessage(senderId, `🎉 CONNECTED!\n────────────────────\nPartner: ${partner.name}\nRole: ${partner.role.toUpperCase()}${guide}`, true, ["quit"]);
+            await sendMessage(partner.psid, `🎉 CONNECTED!\n────────────────────\nPartner: ${user.name}\nRole: ${user.role.toUpperCase()}${guide}`, true, ["quit"]);
         } else {
             await User.updateOne({ psid: senderId }, { isWaiting: true });
             await sendMessage(senderId, "🔍 SEARCHING...\n────────────────────\nWaiting for a partner...");
@@ -186,39 +204,36 @@ async function handleCommands(senderId, text, lowerText, user) {
     }
 
     if (lowerText === "quit") {
-        if (!user.partnerId) return sendMessage(senderId, "❌ ERROR\nYou are not in a chat.");
-        if (user.msgCount < 2) return sendMessage(senderId, "⚠️ RESTRICTION\n────────────────────\nSend at least 2 messages before quitting.");
+        if (!user.partnerId) return sendMessage(senderId, "❌ ERROR\nYou are not in a chat.", true, ["chat"]);
+        if (user.msgCount < 2) return sendMessage(senderId, "⚠️ RESTRICTION\n────────────────────\nSend at least 2 messages before quitting.", true, ["quit"]);
         const partnerId = user.partnerId;
         await User.updateOne({ psid: senderId }, { partnerId: null, msgCount: 0 });
         await User.updateOne({ psid: partnerId }, { partnerId: null, msgCount: 0 });
-        await sendMessage(senderId, "👋 ENDED\n────────────────────\nYou ended the chat.");
-        await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.");
+        await sendMessage(senderId, "👋 ENDED\n────────────────────\nYou ended the chat.", true, ["chat"]);
+        await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.", true, ["chat"]);
     }
 
-    // OWNER ONLY
+    // OWNER/ADMIN Logic (Simplified buttons)
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return sendMessage(senderId, "❌ ONLY OWNER CAN MANAGE ADMINS");
         const parts = text.split(" ");
         const targetName = parts.slice(2).join(" ");
         const target = await User.findOne({ name: targetName });
         if (!target) return sendMessage(senderId, "❌ USER NOT FOUND");
-
         target.role = (parts[1] === "add") ? "admin" : "member";
         await target.save();
         await sendMessage(senderId, `✅ SUCCESS\n${targetName} is now ${target.role.toUpperCase()}.`);
     }
 
-    // OWNER OR ADMIN
     if (lowerText.startsWith("/ban ")) {
         if (user.role !== "owner" && user.role !== "admin") return sendMessage(senderId, "❌ PERMISSION DENIED");
         const targetName = text.split(" ").slice(1).join(" ");
         const target = await User.findOne({ name: targetName });
         if (!target) return sendMessage(senderId, "❌ USER NOT FOUND");
-
         target.isBanned = true;
         await target.save();
         if (target.partnerId) {
-            await sendMessage(target.partnerId, "⚠️ SYSTEM\n────────────────────\nYour partner was banned.");
+            await sendMessage(target.partnerId, "⚠️ SYSTEM\n────────────────────\nYour partner was banned.", true, ["chat"]);
             await User.updateOne({ psid: target.partnerId }, { partnerId: null });
         }
         await User.updateOne({ psid: target.psid }, { partnerId: null });
