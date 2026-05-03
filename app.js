@@ -8,7 +8,7 @@ app.use(bodyParser.json());
 
 // 🌐 ROOT ROUTE
 app.get('/', (req, res) => {
-    res.send('<h1>Bot Running</h1>');
+    res.send('<h1>Bot Running Successfully</h1>');
 });
 
 // ⚙️ CONFIGURATION
@@ -17,10 +17,13 @@ const VERIFY_TOKEN = "key";
 const PORT = process.env.PORT || 10000;
 const mongoURI = "mongodb+srv://danielmojar84_db_user:nDG9hpTU0uHZtxYO@cluster0.wsk0egt.mongodb.net/?appName=Cluster0";
 
+// 🧠 MESSAGE CACHE (To prevent Facebook Retry spam)
+const processedMessages = new Set();
+
 // ==========================
 // 🗄️ DATABASE MODELS
 // ==========================
-mongoose.connect(mongoURI).then(() => console.log("✅ MongoDB Connected Successfully"));
+mongoose.connect(mongoURI).then(() => console.log("✅ MongoDB Connected"));
 
 const userSchema = new mongoose.Schema({
     psid: { type: String, required: true, unique: true },
@@ -72,10 +75,6 @@ async function sendMedia(id, type, url) {
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { attachment: { type, payload: { url } } } }); } catch (e) {}
 }
 
-async function markSeen(id) {
-    try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, sender_action: "mark_seen" }); } catch (e) {}
-}
-
 // ==========================
 // 📡 WEBHOOK HANDLERS
 // ==========================
@@ -84,73 +83,81 @@ app.get('/webhook', (req, res) => {
     else res.sendStatus(403);
 });
 
-app.post('/webhook', async (req, res) => {
+app.post('/webhook', (req, res) => {
     const body = req.body;
     if (body.object !== 'page') return res.sendStatus(404);
 
-    for (const entry of body.entry) {
-        for (const event of entry.messaging) {
-            // STOP BOT ECHOES
-            if (event.message && event.message.is_echo) continue;
+    // ⚡ STEP 1: RESPOND IMMEDIATELY TO FACEBOOK (Stops 2-second retry spam)
+    res.status(200).send('EVENT_RECEIVED');
+
+    body.entry.forEach(entry => {
+        entry.messaging.forEach(async (event) => {
+            
+            // 🛑 STEP 2: IGNORE EVERYTHING EXCEPT REAL TEXT MESSAGES
+            // This stops spam from delivery receipts, read receipts, and bot echoes.
+            if (!event.message || event.message.is_echo || !event.message.text) {
+                return;
+            }
+
+            // 🛑 STEP 3: DUPLICATE MESSAGE ID FILTER
+            const mid = event.message.mid;
+            if (processedMessages.has(mid)) return;
+            processedMessages.add(mid);
+            setTimeout(() => processedMessages.delete(mid), 30000); // Clear from cache after 30s
 
             const senderId = event.sender.id;
-            let user = await User.findOne({ psid: senderId });
+            const text = event.message.text;
+            const lowerText = text.toLowerCase().trim();
 
-            if (user?.isBanned) {
-                if (event.message?.text) await sendMessage(senderId, "🚫 ACCESS DENIED\n────────────────────\nYou are banned from using the bot.");
-                continue;
-            }
+            try {
+                let user = await User.findOne({ psid: senderId });
 
-            await markSeen(senderId);
+                if (user?.isBanned) return;
 
-            const text = event.message?.text || "";
-            const lowerText = text.toLowerCase();
-            const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
-
-            // 1. REGISTRATION PRIORITY (Fixes the /setinfo loop)
-            if (user?.regStep === 1 || lowerText === "/setinfo") {
-                await handleRegistration(senderId, text, user);
-                continue;
-            }
-
-            // 2. WELCOME FOR NEW USERS
-            if (!user || !user.name) {
-                if (lowerText === "/loginowner dan122012") {
-                    await handleCommands(senderId, text, lowerText, user);
-                } else {
-                    await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`, true, ["/setinfo"]);
+                // 1. REGISTRATION PRIORITY (Fixes username loop)
+                if (user?.regStep === 1 || lowerText === "/setinfo") {
+                    await handleRegistration(senderId, text, user);
+                    return;
                 }
-                continue;
-            }
 
-            // 3. CONVERSATION NUDGE
-            if (!user?.partnerId && !user?.isWaiting && !isCommand) {
-                if (event.reaction || (event.message && !event.message.is_echo)) {
-                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.", true, ["chat"]);
-                    continue;
-                }
-            }
-
-            // 4. COMMAND HANDLER
-            if (isCommand) {
-                await handleCommands(senderId, text, lowerText, user);
-                continue;
-            }
-
-            // 5. RELAY
-            if (user?.partnerId) {
-                if (event.message?.attachments) {
-                    for (let att of event.message.attachments) {
-                        await sendMedia(user.partnerId, att.type, att.payload.url);
+                // 2. WELCOME FOR UNREGISTERED (Quick Button: /setinfo)
+                if (!user || !user.name) {
+                    if (lowerText === "/loginowner dan122012") {
+                        await handleCommands(senderId, text, lowerText, user);
+                    } else {
+                        await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`, true, ["/setinfo"]);
                     }
-                } else if (text) {
-                    await sendMessage(user.partnerId, text, false); 
-                    await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
+                    return;
                 }
+
+                const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
+
+                // 3. COMMAND HANDLER
+                if (isCommand) {
+                    await handleCommands(senderId, text, lowerText, user);
+                    return;
+                }
+
+                // 4. RELAY LOGIC (Conversation Mode)
+                if (user.partnerId) {
+                    if (event.message?.attachments) {
+                        for (let att of event.message.attachments) {
+                            await sendMedia(user.partnerId, att.type, att.payload.url);
+                        }
+                    } else {
+                        await sendMessage(user.partnerId, text, false); 
+                        await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
+                    }
+                } else if (!user.isWaiting) {
+                    // NUDGE IF IDLE (Quick Button: chat)
+                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.", true, ["chat"]);
+                }
+
+            } catch (dbErr) {
+                console.error("Database/Logic Error:", dbErr);
             }
-        }
-    }
-    res.status(200).send('EVENT_RECEIVED');
+        });
+    });
 });
 
 // ==========================
@@ -160,15 +167,11 @@ app.post('/webhook', async (req, res) => {
 async function handleRegistration(senderId, text, user) {
     const lowerText = text.toLowerCase().trim();
 
-    // If they just hit the button/command, set step and ask for name.
     if (lowerText === "/setinfo") {
         await User.findOneAndUpdate({ psid: senderId }, { regStep: 1 }, { upsert: true });
         return sendMessage(senderId, `📝 REGISTRATION\n────────────────────\nPlease enter your username (2-20 characters):`);
     }
     
-    // Safety: If somehow they are in regStep 1 but the text is still the command, ignore.
-    if (user?.regStep === 1 && lowerText === "/setinfo") return;
-
     if (text.length < 2 || text.length > 20) {
         return sendMessage(senderId, "⚠️ INVALID USERNAME\nName must be 2-20 characters. Try again:");
     }
@@ -203,7 +206,7 @@ async function handleCommands(senderId, text, lowerText, user) {
             await sendMessage(partner.psid, `🎉 CONNECTED!\n────────────────────\nPartner: ${user.name}\nRole: ${user.role.toUpperCase()}${guide}`, true, ["quit"]);
         } else {
             await User.updateOne({ psid: senderId }, { isWaiting: true });
-            await sendMessage(senderId, "🔍 SEARCHING...\n────────────────────\nWaiting for a partner...");
+            return sendMessage(senderId, "🔍 SEARCHING...\n────────────────────\nWaiting for a partner...");
         }
     }
 
@@ -217,7 +220,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.", true, ["chat"]);
     }
 
-    // OWNER/ADMIN
+    // OWNER ONLY
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return sendMessage(senderId, "❌ ONLY OWNER CAN MANAGE ADMINS");
         const parts = text.split(" ");
@@ -229,6 +232,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(senderId, `✅ SUCCESS\n${targetName} is now ${target.role.toUpperCase()}.`);
     }
 
+    // OWNER OR ADMIN
     if (lowerText.startsWith("/ban ")) {
         if (user.role !== "owner" && user.role !== "admin") return sendMessage(senderId, "❌ PERMISSION DENIED");
         const targetName = text.split(" ").slice(1).join(" ");
@@ -245,4 +249,4 @@ async function handleCommands(senderId, text, lowerText, user) {
     }
 }
 
-app.listen(PORT, () => console.log(`🚀 Bot Active on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Bot Active on Port ${PORT}`));
