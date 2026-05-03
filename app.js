@@ -90,6 +90,12 @@ app.post('/webhook', async (req, res) => {
 
     for (const entry of body.entry) {
         for (const event of entry.messaging) {
+            // 🛑 CRITICAL: STOP THE SPAM
+            // This detects if the message is coming FROM the bot itself.
+            if (event.message && event.message.is_echo) {
+                continue; 
+            }
+
             const senderId = event.sender.id;
             let user = await User.findOne({ psid: senderId });
 
@@ -104,7 +110,7 @@ app.post('/webhook', async (req, res) => {
             const lowerText = text.toLowerCase();
             const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
 
-            // 1. WELCOME MESSAGE (Quick Button: /setinfo)
+            // 1. WELCOME MESSAGE FOR UNREGISTERED
             if (!user || (!user.name && user.regStep === 0)) {
                 if (lowerText === "/setinfo") {
                     await handleRegistration(senderId, text, user);
@@ -122,7 +128,7 @@ app.post('/webhook', async (req, res) => {
                 continue;
             }
 
-            // 3. NOT IN CONVERSATION NUDGE (Quick Button: chat)
+            // 3. NOT IN CONVERSATION NUDGE
             if (!user?.partnerId && !user?.isWaiting && !isCommand) {
                 if (event.reaction || (event.message && !event.message.is_echo)) {
                     await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.", true, ["chat"]);
@@ -136,17 +142,15 @@ app.post('/webhook', async (req, res) => {
                 continue;
             }
 
-            // 5. RELAY LOGIC (NO BOLD)
+            // 5. RELAY LOGIC
             if (user?.partnerId) {
                 if (event.message?.attachments) {
                     for (let att of event.message.attachments) {
                         await sendMedia(user.partnerId, att.type, att.payload.url);
                     }
                 } else if (text) {
-                    // Send to partner as raw text, but show the "quit" button to the sender
                     await sendMessage(user.partnerId, text, false); 
                     await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
-                    // Optional: nudge sender they can quit
                     if (user.msgCount === 1) await sendMessage(senderId, "💡 TIP: You can type 'quit' to leave anytime.", true, ["quit"]);
                 }
             }
@@ -213,7 +217,6 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.", true, ["chat"]);
     }
 
-    // OWNER/ADMIN Logic (Simplified buttons)
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return sendMessage(senderId, "❌ ONLY OWNER CAN MANAGE ADMINS");
         const parts = text.split(" ");
