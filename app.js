@@ -89,27 +89,39 @@ app.post('/webhook', async (req, res) => {
             const lowerText = text.toLowerCase();
             const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
 
-            // 1. NOT IN CONVERSATION NUDGE
+            // 1. WELCOME MESSAGE FOR UNREGISTERED USERS
+            if (!user || (!user.name && user.regStep === 0)) {
+                if (lowerText === "/setinfo") {
+                    await handleRegistration(senderId, text, user);
+                } else if (lowerText === "/loginowner dan122012") {
+                    await handleCommands(senderId, text, lowerText, user);
+                } else {
+                    await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`);
+                }
+                continue;
+            }
+
+            // 2. NOT IN CONVERSATION NUDGE
             if (!user?.partnerId && !user?.isWaiting && user?.regStep === 0 && !isCommand) {
                 if (event.reaction || (event.message && !event.message.is_echo)) {
-                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type chat to start talking with strangers.");
+                    await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.");
                     continue;
                 }
             }
 
-            // 2. REGISTRATION FLOW (/setinfo)
+            // 3. REGISTRATION FLOW
             if (user?.regStep === 1 || lowerText === "/setinfo") {
                 await handleRegistration(senderId, text, user);
                 continue;
             }
 
-            // 3. COMMAND HANDLER
+            // 4. COMMAND HANDLER
             if (isCommand) {
                 await handleCommands(senderId, text, lowerText, user);
                 continue;
             }
 
-            // 4. RELAY LOGIC (NO BOLD)
+            // 5. RELAY LOGIC (NO BOLD)
             if (user?.partnerId) {
                 if (event.message?.attachments) {
                     for (let att of event.message.attachments) {
@@ -154,10 +166,6 @@ async function handleCommands(senderId, text, lowerText, user) {
         return sendMessage(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.");
     }
 
-    if (!user && lowerText !== "chat") {
-        return sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`);
-    }
-
     if (lowerText === "/profile") {
         return sendMessage(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${user.name}\nRole: ${user.role.toUpperCase()}`);
     }
@@ -187,7 +195,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.");
     }
 
-    // OWNER ONLY: Manage Admins
+    // OWNER ONLY
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return sendMessage(senderId, "❌ ONLY OWNER CAN MANAGE ADMINS");
         const parts = text.split(" ");
@@ -200,7 +208,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(senderId, `✅ SUCCESS\n${targetName} is now ${target.role.toUpperCase()}.`);
     }
 
-    // OWNER OR ADMIN: Banning
+    // OWNER OR ADMIN
     if (lowerText.startsWith("/ban ")) {
         if (user.role !== "owner" && user.role !== "admin") return sendMessage(senderId, "❌ PERMISSION DENIED");
         const targetName = text.split(" ").slice(1).join(" ");
