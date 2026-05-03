@@ -90,11 +90,8 @@ app.post('/webhook', async (req, res) => {
 
     for (const entry of body.entry) {
         for (const event of entry.messaging) {
-            // 🛑 CRITICAL: STOP THE SPAM
-            // This detects if the message is coming FROM the bot itself.
-            if (event.message && event.message.is_echo) {
-                continue; 
-            }
+            // STOP BOT ECHOES
+            if (event.message && event.message.is_echo) continue;
 
             const senderId = event.sender.id;
             let user = await User.findOne({ psid: senderId });
@@ -110,11 +107,15 @@ app.post('/webhook', async (req, res) => {
             const lowerText = text.toLowerCase();
             const isCommand = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
 
-            // 1. WELCOME MESSAGE FOR UNREGISTERED
-            if (!user || (!user.name && user.regStep === 0)) {
-                if (lowerText === "/setinfo") {
-                    await handleRegistration(senderId, text, user);
-                } else if (lowerText === "/loginowner dan122012") {
+            // 1. REGISTRATION PRIORITY (Fixes the /setinfo loop)
+            if (user?.regStep === 1 || lowerText === "/setinfo") {
+                await handleRegistration(senderId, text, user);
+                continue;
+            }
+
+            // 2. WELCOME FOR NEW USERS
+            if (!user || !user.name) {
+                if (lowerText === "/loginowner dan122012") {
                     await handleCommands(senderId, text, lowerText, user);
                 } else {
                     await sendMessage(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create/Update account\n/profile - View profile\nchat - Find someone\nquit - End conversation`, true, ["/setinfo"]);
@@ -122,13 +123,7 @@ app.post('/webhook', async (req, res) => {
                 continue;
             }
 
-            // 2. REGISTRATION FLOW
-            if (user?.regStep === 1 || lowerText === "/setinfo") {
-                await handleRegistration(senderId, text, user);
-                continue;
-            }
-
-            // 3. NOT IN CONVERSATION NUDGE
+            // 3. CONVERSATION NUDGE
             if (!user?.partnerId && !user?.isWaiting && !isCommand) {
                 if (event.reaction || (event.message && !event.message.is_echo)) {
                     await sendMessage(senderId, "⚠️ Not in a conversation.\n────────────────────\nPlease type CHAT to start talking with strangers.", true, ["chat"]);
@@ -142,7 +137,7 @@ app.post('/webhook', async (req, res) => {
                 continue;
             }
 
-            // 5. RELAY LOGIC
+            // 5. RELAY
             if (user?.partnerId) {
                 if (event.message?.attachments) {
                     for (let att of event.message.attachments) {
@@ -151,7 +146,6 @@ app.post('/webhook', async (req, res) => {
                 } else if (text) {
                     await sendMessage(user.partnerId, text, false); 
                     await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
-                    if (user.msgCount === 1) await sendMessage(senderId, "💡 TIP: You can type 'quit' to leave anytime.", true, ["quit"]);
                 }
             }
         }
@@ -164,11 +158,17 @@ app.post('/webhook', async (req, res) => {
 // ==========================
 
 async function handleRegistration(senderId, text, user) {
-    if (text.toLowerCase() === "/setinfo") {
+    const lowerText = text.toLowerCase().trim();
+
+    // If they just hit the button/command, set step and ask for name.
+    if (lowerText === "/setinfo") {
         await User.findOneAndUpdate({ psid: senderId }, { regStep: 1 }, { upsert: true });
         return sendMessage(senderId, `📝 REGISTRATION\n────────────────────\nPlease enter your username (2-20 characters):`);
     }
     
+    // Safety: If somehow they are in regStep 1 but the text is still the command, ignore.
+    if (user?.regStep === 1 && lowerText === "/setinfo") return;
+
     if (text.length < 2 || text.length > 20) {
         return sendMessage(senderId, "⚠️ INVALID USERNAME\nName must be 2-20 characters. Try again:");
     }
@@ -217,6 +217,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await sendMessage(partnerId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.", true, ["chat"]);
     }
 
+    // OWNER/ADMIN
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return sendMessage(senderId, "❌ ONLY OWNER CAN MANAGE ADMINS");
         const parts = text.split(" ");
