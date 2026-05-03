@@ -41,23 +41,6 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model("User", userSchema);
 
-// Helper for Unicode Bold
-const toBold = (text) => {
-    if (!text) return "";
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    const boldChars = ["𝗔","𝗕","𝗖","𝗗","𝗘","𝗙","𝗚","𝗛","𝗜","𝗝","𝗞","𝗟","𝗠","𝗡","𝗢","𝗣","𝗤","𝗥","𝗦","𝗧","𝗨","𝗩","𝗪","𝗫","𝗬","𝗭","𝗮","𝗯","𝗰","𝗱","𝗲","𝗳","𝗴","𝗵","𝗶","𝗷","𝗸","𝗹","𝗺","𝗻","𝗼","𝗽","𝗾","𝗿","𝘀","𝘁","𝘂","𝘃","𝘄","𝘅","𝘆","𝘇","𝟬","𝟭","𝟮","𝟯","𝟰","𝟱","𝟲","𝟳","𝟴","𝟵"];
-    return text.split('').map(c => {
-        const i = chars.indexOf(c);
-        return i > -1 ? boldChars[i] : c;
-    }).join('');
-};
-
-// Ghost Handler Check
-const isSystemTag = (text) => {
-    if (!text) return false;
-    return text.startsWith("𝗿"); 
-};
-
 // ==========================
 // WEBHOOK VERIFICATION
 // ==========================
@@ -88,23 +71,6 @@ app.post('/webhook', async (req, res) => {
                     continue;
                 }
 
-                // 🎭 REACTIONS FIXED
-                if (event.reaction && activeChats[senderId]) {
-                    const reactionType = event.reaction.reaction; // 'love', 'smile', etc.
-                    const emojiMap = { 'love': '❤️', 'smile': '😄', 'wow': '😮', 'sad': '😢', 'angry': '😠', 'like': '👍', 'dislike': '👎', 'heart': '❤️', 'other': '✨' };
-                    const displayEmoji = emojiMap[reactionType] || "✨";
-                    
-                    // Correctly pull the text of the message being reacted to
-                    let targetText = event.reaction.text || "";
-
-                    if (isSystemTag(targetText)) continue; 
-
-                    const ownerLabel = (event.reaction.action === 'react') ? "your" : "their";
-                    const reactionMsg = `${toBold(`reacted ${displayEmoji} to ${ownerLabel} message`)} "${targetText}"`;
-                    await sendMessage(activeChats[senderId], reactionMsg);
-                    continue;
-                }
-
                 if (event.read && activeChats[senderId]) {
                     await markSeen(activeChats[senderId]);
                     continue;
@@ -126,25 +92,11 @@ app.post('/webhook', async (req, res) => {
                     }
                     if (commandHandled) continue;
 
-                    // RELAY FIXED
+                    // RELAY (CLEAN - NO REPLIES/REACTIONS)
                     if (activeChats[senderId]) {
                         userMessageCount[senderId] = (userMessageCount[senderId] || 0) + 1;
                         
-                        // Check for reply_to metadata properly
-                        if (event.message.reply_to) {
-                            const originalText = event.message.reply_to.text;
-                            
-                            // If reply to SYSTEM text or if original was MEDIA (no text)
-                            if (!originalText || isSystemTag(originalText)) {
-                                if (text) await sendMessage(activeChats[senderId], text);
-                            } 
-                            // If reply to normal USER text
-                            else {
-                                const formattedReply = `${toBold("replied to")} "${originalText}"\n\n${text || ""}`;
-                                await sendMessage(activeChats[senderId], formattedReply);
-                            }
-                        } 
-                        else if (event.message.attachments) {
+                        if (event.message.attachments) {
                             for (let att of event.message.attachments) {
                                 await sendMedia(activeChats[senderId], att.type, att.payload.url);
                             }
