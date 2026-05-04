@@ -41,7 +41,6 @@ const bold = (t) => {
     return t.split('').map(x => { const i=c.indexOf(x); return i>-1?b[i]:x; }).join('');
 };
 
-// Send Typing Indicator
 async function sendTyping(id) {
     if (!id || id === PAGE_ID) return;
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, sender_action: "typing_on" }); } catch (e) {}
@@ -50,10 +49,8 @@ async function sendTyping(id) {
 async function send(id, text, isBold=true, btns=[], showTyping=true) {
     if (!id || id === PAGE_ID) return;
     if (showTyping) await sendTyping(id);
-    
     const messageData = { text: isBold ? bold(text) : text };
     if (btns.length > 0) messageData.quick_replies = btns.map(b => ({ content_type: "text", title: b.toUpperCase(), payload: b.toLowerCase() }));
-    
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: messageData }); } catch (e) {}
 }
 
@@ -111,7 +108,7 @@ app.post('/webhook', (req, res) => {
                         await User.findOneAndUpdate({ psid: senderId }, { role: "owner", name: "Owner" }, { upsert: true });
                         return send(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.", true, ["chat"]);
                     } else if (text) {
-                        return send(senderId, `👋 WELCOME\n────────────────────\nPlease type /setname [name] to start`, true);
+                        return send(senderId, `👋 WELCOME\n────────────────────\nYou must register to start chatting.\n\nFormat: /setname [name]\nExample: /setname kyushi`, true);
                     }
                     return;
                 }
@@ -121,7 +118,6 @@ app.post('/webhook', (req, res) => {
 
                 if (user.partnerId) {
                     if (attachments) for (let att of attachments) await sendMedia(user.partnerId, att.type, att.payload.url);
-                    // User messages do NOT show bot typing indicator to keep it realistic
                     if (text) { await send(user.partnerId, text, false, [], false); await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } }); }
                 } else if (!user.isWaiting && text) {
                     await send(senderId, "⚠️ Not in a conversation.\n────────────────────\nType CHAT to find a partner.", true, ["chat"]);
@@ -137,23 +133,31 @@ app.post('/webhook', (req, res) => {
 async function handleRegistration(senderId, text, user) {
     const parts = text.trim().split(" ");
     const newName = parts.slice(1).join(" ").trim();
-    if (!newName) return send(senderId, "📝 Use: /setname [name]", true);
-    if (newName.length < 2 || newName.length > 20) return send(senderId, "⚠️ Name must be 2-20 characters.", true);
-    
+
+    if (!newName) {
+        return send(senderId, `📝 REGISTRATION GUIDE\n────────────────────\nTo set or change your identity, please use the following format:\n\nFormat: /setname [your name]\nExample: /setname AzukiDan\n\n⚠️ RULES:\n- No symbols or emojis allowed\n- Only letters and numbers\n- Length: 2 to 20 characters`, true);
+    }
+
+    if (newName.length < 2 || newName.length > 20) {
+        return send(senderId, "⚠️ INVALID LENGTH\n────────────────────\nYour name must be between 2 and 20 characters.", true);
+    }
+
+    // BLOCK SYMBOLS AND EMOJIS (Alphanumeric and Spaces only)
+    const validRegex = /^[a-zA-Z0-9 ]+$/;
+    if (!validRegex.test(newName)) {
+        return send(senderId, "❌ SYMBOLS NOT ALLOWED\n────────────────────\nSpecial characters and emojis are prohibited. Please use only letters and numbers.", true);
+    }
+
     const exists = await User.findOne({ name: newName, psid: { $ne: senderId } });
-    if (exists) return send(senderId, "❌ Name already taken.", true);
+    if (exists) {
+        return send(senderId, "❌ NAME UNAVAILABLE\n────────────────────\nThis username is already registered. Please choose another name.", true);
+    }
 
     await User.findOneAndUpdate({ psid: senderId }, { name: newName }, { upsert: true });
-    return send(senderId, `✅ Your name is now: ${newName}`, true, ["chat"]);
+    return send(senderId, `✅ PROFILE SYNCHRONIZED\n────────────────────\nYour identity has been successfully updated to: ${newName}\n\nYou may now proceed to chat.`, true, ["chat"]);
 }
 
 async function handleCommands(senderId, text, lowerText, user) {
-    // Admin/Ban logic remains for your control
-    if (lowerText.startsWith("/admin ") || lowerText.startsWith("/ban ") || lowerText.startsWith("/unban ")) {
-        if (user.role !== "owner" && user.role !== "admin") return send(senderId, "❌ DENIED");
-        // ... (existing logic)
-    }
-
     if (lowerText === "/profile") return send(senderId, `👤 PROFILE\n────────────────────\nName: ${user.name}\nRole: ${user.role.toUpperCase()}`, true, [user.partnerId ? "quit" : "chat"]);
 
     if (lowerText === "chat") {
@@ -167,7 +171,7 @@ async function handleCommands(senderId, text, lowerText, user) {
             await send(p.psid, `🎉 CONNECTED!\n────────────────────\nPartner: ${user.name}\nRole: ${user.role.toUpperCase()}${guide}`, true, ["quit"]);
         } else {
             await User.updateOne({ psid: senderId }, { isWaiting: true });
-            return send(senderId, "🔍 SEARCHING FOR PARTNER\n────────────────────\nPlease wait while we search for a stranger for you...");
+            return send(senderId, "🔍 SEARCHING FOR PARTNER\n────────────────────\nPlease wait while we search for a stranger...");
         }
     }
 
