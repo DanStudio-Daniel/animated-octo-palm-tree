@@ -11,7 +11,9 @@ const PAGE_ACCESS_TOKEN = "EAAcLptP3AhgBRbxtMkjyqblLYuUryqvrNKX7bpydhj2hHG6IUTUg
 const VERIFY_TOKEN = "key";
 const PORT = process.env.PORT || 10000;
 const mongoURI = "mongodb+srv://danielmojar84_db_user:nDG9hpTU0uHZtxYO@cluster0.wsk0egt.mongodb.net/?appName=Cluster0";
-const PAGE_ID = "1073264345872164"; // ❗ IMPORTANT: Put your Page ID here to prevent echos
+
+// 🆔 YOUR PAGE ID
+const PAGE_ID = "1073264345872164"; 
 
 const processedMessages = new Set();
 
@@ -106,7 +108,7 @@ const bold = (t) => {
 };
 
 async function send(id, text, isBold=true, btns=[]) {
-    if (id === PAGE_ID) return; // Never send to self
+    if (id === PAGE_ID) return;
     const messageData = { text: isBold ? bold(text) : text };
     if (btns.length > 0) messageData.quick_replies = btns.map(b => ({ content_type: "text", title: b.toUpperCase(), payload: b.toLowerCase() }));
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: messageData }); } catch (e) {}
@@ -138,15 +140,12 @@ app.post('/webhook', (req, res) => {
         entry.messaging.forEach(async (event) => {
             const senderId = event.sender.id;
             
-            // 🛑 ANTI-SPAM: BLOCK ECHOS AND SELF-MESSAGES
-            if (event.message && (event.message.is_echo || senderId === PAGE_ID)) return;
+            // IGNORE SELF AND ECHOS
+            if (senderId === PAGE_ID || (event.message && event.message.is_echo)) return;
             
             const mid = event.message?.mid;
             if (mid && processedMessages.has(mid)) return;
-            if (mid) { 
-                processedMessages.add(mid); 
-                setTimeout(() => processedMessages.delete(mid), 60000); 
-            }
+            if (mid) { processedMessages.add(mid); setTimeout(() => processedMessages.delete(mid), 30000); }
             
             await markSeen(senderId);
 
@@ -154,14 +153,14 @@ app.post('/webhook', (req, res) => {
             const attachments = event.message?.attachments;
             const lowerText = text.toLowerCase().trim();
 
-            // Ignore empty messages that aren't attachments
-            if (!text && !attachments) return;
-
             try {
                 let user = await User.findOne({ psid: senderId });
                 
                 if (user?.isBanned) {
-                    return send(senderId, `🚫 ACCOUNT RESTRICTED\n────────────────────\nYour access to this service has been suspended due to a violation of terms.\n\nTo appeal this decision, please contact the developer: Azuki Dan.\n\nStatus: BANNED`, true);
+                    if (text || attachments) {
+                        return send(senderId, `🚫 ACCOUNT RESTRICTED\n────────────────────\nYour access to this service has been suspended due to a violation of terms.\n\nTo appeal this decision, please contact the developer: Azuki Dan.\n\nStatus: BANNED`, true);
+                    }
+                    return;
                 }
 
                 if (user?.regStep === 1 || lowerText === "/setinfo") {
@@ -173,9 +172,10 @@ app.post('/webhook', (req, res) => {
                     if (lowerText === "/loginowner dan122012") {
                         await User.findOneAndUpdate({ psid: senderId }, { role: "owner", name: "Owner" }, { upsert: true });
                         return send(senderId, "✅ AUTHENTICATION SUCCESS\n────────────────────\nYou are now logged in as OWNER.", true, ["chat"]);
-                    } else {
+                    } else if (text) {
                         return send(senderId, `👋 WELCOME\n────────────────────\nPlease type /setinfo to start\n\n📋 COMMANDS:\n/setinfo - Create account\nchat - Find someone`, true, ["/setinfo"]);
                     }
+                    return;
                 }
 
                 const isCmd = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
@@ -225,9 +225,9 @@ async function handleCommands(senderId, text, lowerText, user) {
         await target.save();
         
         if (target.role === "admin") {
-            await send(target.psid, `🛡️ RANK UPDATED\n────────────────────\nYou have been promoted to ADMIN.`, true);
+            await send(target.psid, `🛡️ RANK UPDATED\n────────────────────\nYou have been promoted to ADMIN.\n\nYou now have access to administrative commands.`, true);
         } else {
-            await send(target.psid, `📉 RANK UPDATED\n────────────────────\nYour administrative privileges have been revoked.`, true);
+            await send(target.psid, `📉 RANK UPDATED\n────────────────────\nYour administrative privileges have been revoked.\n\nStatus: MEMBER`, true);
         }
         return send(senderId, `✅ ${target.name} is now ${target.role.toUpperCase()}.`);
     }
@@ -242,7 +242,7 @@ async function handleCommands(senderId, text, lowerText, user) {
         await target.save();
         
         if (isUnban) {
-            await send(target.psid, `✅ ACCOUNT RESTORED\n────────────────────\nYour restriction has been lifted.`, true, ["chat"]);
+            await send(target.psid, `✅ ACCOUNT RESTORED\n────────────────────\nYour restriction has been lifted by the administrator.\n\nYou may now use the service again.`, true, ["chat"]);
         } else if (target.partnerId) {
             await send(target.partnerId, "⚠️ Partner was banned.", true, ["chat"]);
             await User.updateOne({ psid: target.partnerId }, { partnerId: null });
@@ -254,27 +254,28 @@ async function handleCommands(senderId, text, lowerText, user) {
     if (lowerText === "/profile") return send(senderId, `👤 PROFILE INFO\n────────────────────\nName: ${user.name}\nRole: ${user.role.toUpperCase()}`, true, [user.partnerId ? "quit" : "chat"]);
 
     if (lowerText === "chat") {
-        if (user.partnerId) return send(senderId, "⚠️ ALERT\nYou are already in a chat.", true, ["quit"]);
+        if (user.partnerId) return send(senderId, "⚠️ ALERT\n────────────────────\nYou are already in a chat.", true, ["quit"]);
         const p = await User.findOne({ isWaiting: true, psid: { $ne: senderId } });
         if (p) {
             await User.updateOne({ psid: senderId }, { partnerId: p.psid, isWaiting: false, msgCount: 0 });
             await User.updateOne({ psid: p.psid }, { partnerId: senderId, isWaiting: false, msgCount: 0 });
-            await send(senderId, `🎉 CONNECTED!\nPartner: ${p.name}`, true, ["quit"]);
-            await send(p.psid, `🎉 CONNECTED!\nPartner: ${user.name}`, true, ["quit"]);
+            const guide = `\n────────────────────\n💬 GUIDE:\n- Send messages, photos, or VM\n- Type 'quit' to end`;
+            await send(senderId, `🎉 CONNECTED!\n────────────────────\nPartner: ${p.name}\nRole: ${p.role.toUpperCase()}${guide}`, true, ["quit"]);
+            await send(p.psid, `🎉 CONNECTED!\n────────────────────\nPartner: ${user.name}\nRole: ${user.role.toUpperCase()}${guide}`, true, ["quit"]);
         } else {
             await User.updateOne({ psid: senderId }, { isWaiting: true });
-            return send(senderId, "🔍 SEARCHING...\nWaiting for a partner...");
+            return send(senderId, "🔍 SEARCHING...\n────────────────────\nWaiting for a partner...");
         }
     }
 
     if (lowerText === "quit") {
-        if (!user.partnerId) return send(senderId, "❌ NOT IN CHAT", true, ["chat"]);
-        if (user.msgCount < 2) return send(senderId, "⚠️ Send at least 2 messages before quitting.", true, ["quit"]);
+        if (!user.partnerId) return send(senderId, "❌ ERROR\n────────────────────\nYou are not in a chat.", true, ["chat"]);
+        if (user.msgCount < 2) return send(senderId, "⚠️ RESTRICTION\n────────────────────\nSend at least 2 messages before quitting.", true, ["quit"]);
         const pId = user.partnerId;
         await User.updateOne({ psid: senderId }, { partnerId: null, msgCount: 0 });
         await User.updateOne({ psid: pId }, { partnerId: null, msgCount: 0 });
-        await send(senderId, "👋 ENDED", true, ["chat"]);
-        await send(pId, "👋 Stranger left.", true, ["chat"]);
+        await send(senderId, "👋 ENDED\n────────────────────\nYou ended the chat.", true, ["chat"]);
+        await send(pId, "👋 DISCONNECTED\n────────────────────\nStranger has left the conversation.", true, ["chat"]);
     }
 }
 
