@@ -12,7 +12,7 @@ const VERIFY_TOKEN = "key";
 const PORT = process.env.PORT || 10000;
 const mongoURI = "mongodb+srv://danielmojar84_db_user:nDG9hpTU0uHZtxYO@cluster0.wsk0egt.mongodb.net/?appName=Cluster0";
 
-// 🆔 YOUR PAGE ID - STRICTLY BLOCKED FROM TRIGGERING RESPONSES
+// 🆔 YOUR PAGE ID
 const PAGE_ID = "1073264345872164"; 
 
 const processedMessages = new Set();
@@ -108,7 +108,7 @@ const bold = (t) => {
 };
 
 async function send(id, text, isBold=true, btns=[]) {
-    if (!id || id === PAGE_ID) return; // Never respond to self
+    if (!id || id === PAGE_ID) return;
     const messageData = { text: isBold ? bold(text) : text };
     if (btns.length > 0) messageData.quick_replies = btns.map(b => ({ content_type: "text", title: b.toUpperCase(), payload: b.toLowerCase() }));
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: messageData }); } catch (e) {}
@@ -141,11 +141,9 @@ app.post('/webhook', (req, res) => {
         entry.messaging.forEach(async (event) => {
             const senderId = event.sender.id;
             
-            // 🛑 CRITICAL SPAM PREVENTER 1: Ignore Bot Identity & Facebook Echoes
-            if (senderId === PAGE_ID) return;
-            if (event.message && event.message.is_echo) return;
+            // STRICT SPAM BLOCKS
+            if (senderId === PAGE_ID || (event.message && event.message.is_echo)) return;
             
-            // 🛑 CRITICAL SPAM PREVENTER 2: Duplication check
             const mid = event.message?.mid;
             if (mid && processedMessages.has(mid)) return;
             if (mid) { processedMessages.add(mid); setTimeout(() => processedMessages.delete(mid), 30000); }
@@ -157,7 +155,6 @@ app.post('/webhook', (req, res) => {
             const lowerText = text.toLowerCase().trim();
 
             try {
-                // Fetch fresh user data every time a message arrives
                 let user = await User.findOne({ psid: senderId });
                 
                 if (user?.isBanned) {
@@ -167,13 +164,13 @@ app.post('/webhook', (req, res) => {
                     return;
                 }
 
-                // Handle Registration logic
-                if (user?.regStep === 1 || lowerText === "/setinfo") {
+                // REGISTRATION BLOCK - Strictly isolated to prevent loops
+                if (lowerText === "/setinfo" || (user && user.regStep === 1)) {
                     await handleRegistration(senderId, text, user);
                     return;
                 }
 
-                // Handle New User logic
+                // NEW USER BLOCK
                 if (!user || !user.name) {
                     if (lowerText === "/loginowner dan122012") {
                         await User.findOneAndUpdate({ psid: senderId }, { role: "owner", name: "Owner" }, { upsert: true });
@@ -184,25 +181,24 @@ app.post('/webhook', (req, res) => {
                     return;
                 }
 
+                // COMMAND BLOCK
                 const isCmd = lowerText.startsWith("/") || ["chat", "quit"].includes(lowerText);
                 if (isCmd) {
                     await handleCommands(senderId, text, lowerText, user);
                     return;
                 }
 
-                // Chat Logic
+                // CHAT BLOCK
                 if (user.partnerId) {
-                    // Send to partner
                     if (attachments) for (let att of attachments) await sendMedia(user.partnerId, att.type, att.payload.url);
                     if (text) {
                         await send(user.partnerId, text, false); 
                         await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
                     }
                 } else if (!user.isWaiting && text) {
-                    // 🛑 ONLY send this if the user actually sent text and isn't in a state of waiting
                     await send(senderId, "⚠️ Not in a conversation.\n────────────────────\nChoice:\n- Type CHAT to find a partner\n- Type /setinfo to change name", true, ["chat", "/setinfo"]);
                 }
-            } catch (err) { console.error("Error in webhook processing:", err); }
+            } catch (err) { console.error(err); }
         });
     });
 });
@@ -211,16 +207,27 @@ app.post('/webhook', (req, res) => {
 // 🕹️ LOGIC FUNCTIONS
 // ==========================
 async function handleRegistration(senderId, text, user) {
-    if (text.toLowerCase().trim() === "/setinfo") {
+    const input = text.trim();
+    const lowerInput = input.toLowerCase();
+
+    if (lowerInput === "/setinfo") {
         await User.findOneAndUpdate({ psid: senderId }, { regStep: 1 }, { upsert: true });
         return send(senderId, `📝 SET USERNAME\n────────────────────\nPlease enter your desired name (2-20 characters):`);
     }
-    if (user?.regStep === 1) {
-        if (!text || text.length < 2 || text.length > 20) return send(senderId, "⚠️ INVALID\nName must be 2-20 characters. Try again:");
-        const exists = await User.findOne({ name: text, psid: { $ne: senderId } });
-        if (exists) return send(senderId, "❌ NAME TAKEN\nPlease choose another one:");
-        await User.updateOne({ psid: senderId }, { name: text, regStep: 0 });
-        return send(senderId, `✅ PROFILE UPDATED\n────────────────────\nYour name is now: ${text}`, true, ["chat"]);
+
+    if (user && user.regStep === 1) {
+        // Validation check
+        if (!input || input.length < 2 || input.length > 20 || lowerInput === "invalid") {
+            return send(senderId, "⚠️ INVALID\n────────────────────\nName must be 2-20 characters. Please try again:");
+        }
+
+        const exists = await User.findOne({ name: input, psid: { $ne: senderId } });
+        if (exists) {
+            return send(senderId, "❌ NAME TAKEN\n────────────────────\nThis username is already in use. Please choose another one:");
+        }
+
+        await User.updateOne({ psid: senderId }, { name: input, regStep: 0 });
+        return send(senderId, `✅ PROFILE UPDATED\n────────────────────\nYour name is now: ${input}`, true, ["chat"]);
     }
 }
 
@@ -228,7 +235,8 @@ async function handleCommands(senderId, text, lowerText, user) {
     if (lowerText.startsWith("/admin ")) {
         if (user.role !== "owner") return send(senderId, "❌ OWNER ONLY");
         const parts = text.split(" ");
-        const target = await User.findOne({ name: parts.slice(2).join(" ") });
+        const targetName = parts.slice(2).join(" ");
+        const target = await User.findOne({ name: targetName });
         if (!target) return send(senderId, "❌ USER NOT FOUND");
         target.role = (parts[1] === "add") ? "admin" : "member";
         await target.save();
