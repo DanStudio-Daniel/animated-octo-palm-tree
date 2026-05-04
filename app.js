@@ -12,7 +12,7 @@ const VERIFY_TOKEN = "key";
 const PORT = process.env.PORT || 10000;
 const mongoURI = "mongodb+srv://danielmojar84_db_user:nDG9hpTU0uHZtxYO@cluster0.wsk0egt.mongodb.net/?appName=Cluster0";
 
-// 🆔 YOUR PAGE ID
+// 🆔 YOUR PAGE ID - STRICTLY BLOCKED FROM TRIGGERING RESPONSES
 const PAGE_ID = "1073264345872164"; 
 
 const processedMessages = new Set();
@@ -108,18 +108,19 @@ const bold = (t) => {
 };
 
 async function send(id, text, isBold=true, btns=[]) {
-    if (id === PAGE_ID) return;
+    if (!id || id === PAGE_ID) return; // Never respond to self
     const messageData = { text: isBold ? bold(text) : text };
     if (btns.length > 0) messageData.quick_replies = btns.map(b => ({ content_type: "text", title: b.toUpperCase(), payload: b.toLowerCase() }));
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: messageData }); } catch (e) {}
 }
 
 async function sendMedia(id, type, url) {
-    if (id === PAGE_ID) return;
+    if (!id || id === PAGE_ID) return;
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, message: { attachment: { type: type === "voice" ? "audio" : type, payload: { url, is_reusable: true } } } }); } catch (e) {}
 }
 
 async function markSeen(id) {
+    if (!id || id === PAGE_ID) return;
     try { await axios.post(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, { recipient: { id }, sender_action: "mark_seen" }); } catch (e) {}
 }
 
@@ -140,9 +141,11 @@ app.post('/webhook', (req, res) => {
         entry.messaging.forEach(async (event) => {
             const senderId = event.sender.id;
             
-            // IGNORE SELF AND ECHOS
-            if (senderId === PAGE_ID || (event.message && event.message.is_echo)) return;
+            // 🛑 CRITICAL SPAM PREVENTER 1: Ignore Bot Identity & Facebook Echoes
+            if (senderId === PAGE_ID) return;
+            if (event.message && event.message.is_echo) return;
             
+            // 🛑 CRITICAL SPAM PREVENTER 2: Duplication check
             const mid = event.message?.mid;
             if (mid && processedMessages.has(mid)) return;
             if (mid) { processedMessages.add(mid); setTimeout(() => processedMessages.delete(mid), 30000); }
@@ -154,6 +157,7 @@ app.post('/webhook', (req, res) => {
             const lowerText = text.toLowerCase().trim();
 
             try {
+                // Fetch fresh user data every time a message arrives
                 let user = await User.findOne({ psid: senderId });
                 
                 if (user?.isBanned) {
@@ -163,11 +167,13 @@ app.post('/webhook', (req, res) => {
                     return;
                 }
 
+                // Handle Registration logic
                 if (user?.regStep === 1 || lowerText === "/setinfo") {
                     await handleRegistration(senderId, text, user);
                     return;
                 }
 
+                // Handle New User logic
                 if (!user || !user.name) {
                     if (lowerText === "/loginowner dan122012") {
                         await User.findOneAndUpdate({ psid: senderId }, { role: "owner", name: "Owner" }, { upsert: true });
@@ -184,16 +190,19 @@ app.post('/webhook', (req, res) => {
                     return;
                 }
 
+                // Chat Logic
                 if (user.partnerId) {
+                    // Send to partner
                     if (attachments) for (let att of attachments) await sendMedia(user.partnerId, att.type, att.payload.url);
                     if (text) {
                         await send(user.partnerId, text, false); 
                         await User.updateOne({ psid: senderId }, { $inc: { msgCount: 1 } });
                     }
-                } else if (!user.isWaiting) {
+                } else if (!user.isWaiting && text) {
+                    // 🛑 ONLY send this if the user actually sent text and isn't in a state of waiting
                     await send(senderId, "⚠️ Not in a conversation.\n────────────────────\nChoice:\n- Type CHAT to find a partner\n- Type /setinfo to change name", true, ["chat", "/setinfo"]);
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) { console.error("Error in webhook processing:", err); }
         });
     });
 });
